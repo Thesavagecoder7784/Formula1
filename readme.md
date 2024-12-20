@@ -19,13 +19,13 @@ This project applies machine learning techniques to analyze and predict outcomes
 - Official Formula 1 Website: Supplementary data from Formula 1 Official Site.
 - Weather API
 
-Key Features
+## Key Features
 
 - Multiple Prediction Models: Predict race winners, qualifying times, or championship standings.
 - Feature Importance Analysis: Understand which factors most influence race results.
 
 
-Acknowledgments
+## Acknowledgments
 
 Kaggle for datasets and community contributions.
 
