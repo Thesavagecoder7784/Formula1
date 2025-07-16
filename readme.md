@@ -10,11 +10,14 @@ This project applies machine learning techniques to analyze races Formula 1 raci
 - Exploratory Data Analysis (EDA): Visualize and analyze trends, such as driver performance over time and team competitiveness.
 - Visualization: Create interactive dashboards or plots for result interpretation.
 
+The main idea of the project is to create an enhanced prediction model that can accurately predict the race winners and eventually the top 10.
+
 ## Data Sources
 
 - Kaggle Datasets: Formula 1 datasets for race results, lap times, and driver/team information.
-- Official Formula 1 Website: Supplementary data from Formula 1 Official Site.
+- Official Formula 1 Website: Supplementary data from the Formula 1 Official Site.
 - Weather API
+- FastF1 API
 
 ## Acknowledgments
 
