@@ -185,12 +185,40 @@ def predict_winner_simple(year, grand_prix_round_to_predict, event_name):
 
 # --- Example Usage ---
 if __name__ == "__main__":
-    CURRENT_YEAR = pd.to_datetime('today').year
-    next_round, event_name = get_next_race_to_predict(CURRENT_YEAR)
-    
-    if next_round and next_round > 1:
-        predict_winner_simple(year=CURRENT_YEAR, grand_prix_round_to_predict=next_round, event_name=event_name)
-    elif next_round == 1:
-        print("Cannot make a prediction for the first race of the season.")
+    # --- Configuration for Prediction ---
+    # Set the year and round number for the race you want to predict.
+    # If you set YEAR_TO_PREDICT or ROUND_TO_PREDICT to None, the script will find the next upcoming race automatically.
+    YEAR_TO_PREDICT = 2025      # Example: 2023, or None
+    ROUND_TO_PREDICT = 12       # Example: 10 for the 10th race, or None
+
+    year = None
+    race_round = None
+    event_name = None
+
+    if YEAR_TO_PREDICT is not None and ROUND_TO_PREDICT is not None:
+        year = YEAR_TO_PREDICT
+        race_round = ROUND_TO_PREDICT
+        try:
+            schedule = fastf1.get_event_schedule(year)
+            event = schedule.loc[schedule['RoundNumber'] == race_round]
+            if not event.empty:
+                event_name = event.iloc[0]['EventName']
+            else:
+                print(f"Error: Round {race_round} not found for the {year} season.")
+                exit()
+        except Exception as e:
+            print(f"An error occurred while fetching event details for {year} Round {race_round}: {e}")
+            exit()
     else:
-        print("Could not determine the next race to predict.")
+        # Automatically find the next race to predict
+        year = pd.to_datetime('today').year
+        race_round, event_name = get_next_race_to_predict(year)
+
+    # --- Run Prediction ---
+    if race_round and event_name:
+        if race_round > 1:
+            predict_winner_simple(year=year, grand_prix_round_to_predict=race_round, event_name=event_name)
+        else:
+            print("Cannot make a prediction for the first race of the season (Round 1).")
+    else:
+        print("Could not determine the race to predict. Check configuration or season schedule.")
