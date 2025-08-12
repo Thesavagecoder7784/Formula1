@@ -3,116 +3,208 @@ import fastf1.plotting
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+import numpy as np
 
-# Enable the cache for faster data loading on subsequent runs
+# --- Configuration ---
 fastf1.Cache.enable_cache('cache/')
-
-# Set up plotting style
 fastf1.plotting.setup_mpl()
 
-def analyze_race_start_performance(year, driver_codes):
+# --- Helper Functions ---
+
+def get_completed_races(year):
     """
-    Analyzes how many positions each driver gains or loses on the first lap of a race
-    across a season.
-
-    Args:
-        year (int): The year of the F1 season.
-        driver_codes (list): A list of three-letter driver codes to analyze.
+    Fetches the schedule for a given year and returns a list of completed race events.
     """
-    print(f"\n--- Analyzing Race Start Performance for {year} ---")
-
-    schedule = fastf1.get_event_schedule(year)
-    today = pd.to_datetime('today').date()
-    race_events = schedule.loc[(schedule['EventFormat'] == 'race') & (schedule['EventDate'].dt.date < today)]
-
-    print(f"Found {len(race_events)} completed race(s) to analyze for the {year} season.")
-
-    all_start_data = []
-
-    for _, event in race_events.iterrows():
-        grand_prix = event['EventName']
-        round_num = event['RoundNumber']
-        print(f"\nProcessing {grand_prix} (Round {round_num})...")
-
-        try:
-            race = fastf1.get_session(year, grand_prix, 'Race')
-            race.load(telemetry=False, weather=False, messages=False)
-            print(f"Successfully loaded session data for {grand_prix}.")
-
-            laps = race.laps
-            if laps.empty:
-                print("No lap data available for this session.")
-                continue
-
-            grid_positions = race.results[['Abbreviation', 'GridPosition']].set_index('Abbreviation')
-            lap1 = laps.loc[laps['LapNumber'] == 1]
-            lap1_positions = lap1[['Abbreviation', 'Position']].set_index('Abbreviation')
-
-            print(f"Found {len(grid_positions)} drivers on the grid.")
-            print(f"Found {len(lap1_positions)} drivers who completed Lap 1.")
-
-            for driver_code in driver_codes:
-                start_pos = grid_positions.loc[driver_code]['GridPosition'] if driver_code in grid_positions.index else None
-                end_lap1_pos = lap1_positions.loc[driver_code]['Position'] if driver_code in lap1_positions.index else None
-
-                if start_pos is not None and end_lap1_pos is not None and start_pos > 0:
-                    positions_gained = start_pos - end_lap1_pos
-                    all_start_data.append({
-                        'Round': round_num,
-                        'GrandPrix': grand_prix,
-                        'Driver': driver_code,
-                        'StartPosition': start_pos,
-                        'EndLap1Position': end_lap1_pos,
-                        'PositionsGained': positions_gained
-                    })
-                    print(f"  -> Recorded data for {driver_code}: Start={start_pos}, EndLap1={end_lap1_pos}, Gained={positions_gained}")
-
-        except Exception as e:
-            print(f"An error occurred loading data for {grand_prix}: {e}")
-
-    if not all_start_data:
-        print("\nNo sufficient race start data collected for the specified drivers across the season.")
-        return
+    print(f"Fetching event schedule for {year}...")
+    try:
+        schedule = fastf1.get_event_schedule(year)
+        today = pd.to_datetime('today').date()
         
-    start_df = pd.DataFrame(all_start_data)
-    start_df.dropna(inplace=True)
+        # Ensure EventDate is datetime and then extract date part
+        if 'EventDate' in schedule.columns:
+            schedule['EventDate'] = pd.to_datetime(schedule['EventDate'])
+            
+        # Filter out non-race events and ensure the event date is in the past
+        completed_races = schedule.loc[
+            (~schedule['EventFormat'].isin(['testing', 'practice'])) & 
+            (schedule['EventDate'].dt.date < today)
+        ]
+        print(f"Found {len(completed_races)} completed race(s) to analyze.")
+        return completed_races
+    except Exception as e:
+        print(f"Error fetching schedule for {year}: {e}")
+        return pd.DataFrame()
 
-    plt.figure(figsize=(15, 7))
-    sns.lineplot(data=start_df, x='Round', y='PositionsGained', hue='Driver', marker='o')
-    plt.title(f'Positions Gained/Lost on Lap 1 - {year} Season', fontsize=16)
-    plt.xlabel('Round', fontsize=12)
+def get_lap1_data(session):
+    """
+    Extracts grid position and lap 1 position data from a race session.
+    """
+    try:
+        session.load(telemetry=False, weather=False, messages=False)
+        print(f"Successfully loaded session data for {session.event['EventName']}.")
+
+        # Check if session.results is valid and contains necessary columns
+        if session.results.empty or 'Abbreviation' not in session.results.columns or 'GridPosition' not in session.results.columns:
+            print(f"Session results for {session.event['EventName']} are empty or missing required columns (Abbreviation, GridPosition).")
+            return None
+
+        laps = session.laps
+        if laps.empty:
+            print("No lap data available for this session.")
+            return None
+
+        grid_positions = session.results[['Abbreviation', 'GridPosition']].set_index('Abbreviation')
+        lap1 = laps.loc[laps['LapNumber'] == 1]
+        
+        if lap1.empty:
+            print("No Lap 1 data available.")
+            return None
+
+        lap1_positions = lap1[['Abbreviation', 'Position']].set_index('Abbreviation')
+        
+        # Get Lap 1 time for context
+        lap1_times = lap1[['Abbreviation', 'LapTime']].set_index('Abbreviation')
+
+        # Combine the data
+        combined_data = grid_positions.join(lap1_positions, how='inner').join(lap1_times, how='inner')
+        combined_data.rename(columns={'Position': 'EndLap1Position'}, inplace=True)
+        
+        return combined_data.reset_index()
+
+    except Exception as e:
+        print(f"An error occurred loading data for {session.event['EventName']}: {e}")
+        return None
+
+def calculate_start_performance(data):
+    """
+    Calculates performance metrics based on lap 1 data.
+    """
+    data['PositionsGained'] = data['GridPosition'] - data['EndLap1Position']
+    
+    # Calculate time delta to the lap 1 leader
+    leader_lap1_time = data['LapTime'].min()
+    data['Lap1TimeDelta'] = data['Lap1Time'] - leader_lap1_time
+    data['Lap1TimeDelta(s)'] = data['Lap1TimeDelta'].dt.total_seconds()
+
+    return data
+
+# --- Visualization Functions ---
+
+def plot_performance_distribution(df, year):
+    """
+    Plots a box plot showing the distribution of positions gained for each driver.
+    """
+    plt.figure(figsize=(14, 8))
+    sns.boxplot(data=df, x='Driver', y='PositionsGained', hue='Driver', palette='viridis', dodge=False)
+    plt.axhline(0, color='gray', linestyle='--', linewidth=1)
+    plt.title(f'Distribution of Positions Gained on Lap 1 - {year} Season', fontsize=16, fontweight='bold')
+    plt.xlabel('Driver', fontsize=12)
     plt.ylabel('Positions Gained (Positive) / Lost (Negative)', fontsize=12)
-    plt.axhline(0, color='gray', linestyle='--', linewidth=0.8)
-    plt.xticks(start_df['Round'].unique())
-    plt.grid(True, linestyle='--', alpha=0.6)
-    plt.legend(title='Driver', bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.xticks(rotation=45, ha='right')
+    plt.grid(axis='y', linestyle='--', alpha=0.7)
+    plt.legend().set_visible(False)
     plt.tight_layout()
     plt.show()
 
-    print("\n--- Season Summary of Race Start Performance ---")
-    summary = start_df.groupby('Driver')['PositionsGained'].agg(['mean', 'sum']).reset_index()
-    summary.columns = ['Driver', 'AvgPositionsGained', 'TotalPositionsGained']
-    
-    for index, row in summary.iterrows():
-        print(f"\n{row['Driver']}:")
-        print(f"  Average Positions Gained/Lost on Lap 1: {row['AvgPositionsGained']:.2f}")
-        print(f"  Total Positions Gained/Lost on Lap 1 (Season): {row['TotalPositionsGained']:.0f}")
 
+def plot_gains_vs_grid_position(df, year):
+    """
+    Plots a scatter plot of positions gained vs. starting grid position.
+    """
+    plt.figure(figsize=(14, 8))
+    sns.regplot(data=df, x='GridPosition', y='PositionsGained', scatter_kws={'alpha':0.6})
+    plt.title(f'Lap 1 Performance vs. Starting Grid Position - {year} Season', fontsize=16, fontweight='bold')
+    plt.xlabel('Starting Grid Position', fontsize=12)
+    plt.ylabel('Positions Gained', fontsize=12)
+    plt.grid(True, linestyle='--', alpha=0.7)
+    plt.gca().invert_xaxis() # P1 is on the left
+    plt.tight_layout()
+    plt.show()
+
+# --- Main Analysis Function ---
+
+def analyze_race_start_performance(year):
+    """
+    Performs a comprehensive analysis of first-lap performance for all drivers
+    across a given F1 season.
+    """
+    print(f"\n--- Analyzing Race Start Performance for {year} ---")
+    
+    race_events = get_completed_races(year)
+    if race_events.empty:
+        return
+
+    all_starts_data = []
+    for _, event in race_events.iterrows():
+        print(f"\nProcessing {event['EventName']} (Round {event['RoundNumber']})...")
+        session = fastf1.get_session(year, event['RoundNumber'], 'Race')
+        lap1_data = get_lap1_data(session)
+
+        if lap1_data is not None:
+            performance_data = calculate_start_performance(lap1_data)
+            performance_data['Round'] = event['RoundNumber']
+            performance_data['GrandPrix'] = event['EventName']
+            all_starts_data.append(performance_data)
+
+    if not all_starts_data:
+        print("\nNo sufficient race start data collected for the season.")
+        return
+        
+    full_season_df = pd.concat(all_starts_data)
+    # Analyze all drivers present in the data
+    analysis_df = full_season_df.copy()
+    analysis_df.rename(columns={'Abbreviation': 'Driver'}, inplace=True)
+
+    if analysis_df.empty:
+        print(f"\nNo data found for any drivers.")
+        return
+
+    # --- Visualizations ---
+    plot_performance_distribution(analysis_df, year)
+    plot_gains_vs_grid_position(analysis_df, year)
+
+    # --- Summary Statistics & Insights ---
+    print("\n--- Season Summary of Race Start Performance ---")
+    summary = analysis_df.groupby('Driver')['PositionsGained'].agg(
+        ['mean', 'sum', 'std', 'max', 'min']
+    ).reset_index()
+    summary.rename(columns={
+        'mean': 'AvgGain', 'sum': 'TotalGain', 'std': 'Consistency',
+        'max': 'BestStart', 'min': 'WorstStart'
+    }, inplace=True)
+    summary = summary.sort_values(by='AvgGain', ascending=False)
+
+    print("Key Metrics:")
+    print("- AvgGain: Average positions gained. Higher is better.")
+    print("- TotalGain: Net positions gained over the season.")
+    print("- Consistency (Std Dev): Lower is more predictable. NaN if only one race.")
+    print("-" * 60)
+
+    for _, row in summary.iterrows():
+        driver = row['Driver']
+        avg_gain = row['AvgGain']
+        consistency = row['Consistency']
+        
+        insight = "is a remarkably consistent starter."
+        if consistency > 1.5:
+            insight = "has shown variable start performance."
+        elif consistency < 0.75:
+            insight = "is a highly consistent and predictable starter."
+
+        print(f"\n{driver} ({insight})")
+        print(f"  - Average Positions Gained: {avg_gain:.2f}")
+        print(f"  - Total Positions Gained (Season): {row['TotalGain']:.0f}")
+        print(f"  - Consistency (Std Dev): {consistency:.2f}")
+        print(f"  - Best Start: +{row['BestStart']:.0f} positions | Worst Start: {row['WorstStart']:.0f} positions")
 
 # --- Example Usage ---
 if __name__ == "__main__":
-    CURRENT_YEAR = 2024
-    print(f"Current year is {CURRENT_YEAR}. Determining season to analyze...")
-    
-    schedule = fastf1.get_event_schedule(CURRENT_YEAR)
-    if schedule.loc[schedule['EventDate'].dt.date < pd.to_datetime('today').date()].empty:
+    CURRENT_YEAR = pd.to_datetime('today').year
+    YEAR_TO_ANALYZE = CURRENT_YEAR
+
+    # Check if any races have been completed in the current year
+    if get_completed_races(CURRENT_YEAR).empty:
         YEAR_TO_ANALYZE = CURRENT_YEAR - 1
         print(f"No completed races in {CURRENT_YEAR} yet. Analyzing the {YEAR_TO_ANALYZE} season.")
-    else:
-        YEAR_TO_ANALYZE = CURRENT_YEAR
-        print(f"Found completed races in {CURRENT_YEAR}. Analyzing the current season.")
-
-    DRIVER_CODES = ['VER', 'HAM', 'LEC', 'RUS', 'PER', 'NOR', 'SAI']
-
-    analyze_race_start_performance(YEAR_TO_ANALYZE, DRIVER_CODES)
-
+    
+    analyze_race_start_performance(YEAR_TO_ANALYZE)
